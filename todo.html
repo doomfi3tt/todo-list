@@ -38,6 +38,70 @@
       font-size: 14px;
     }
 
+    /* 搜索框 */
+    .search-box {
+      margin-bottom: 15px;
+    }
+
+    .search-box input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 2px solid #b8d4e8;
+      border-radius: 10px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+
+    .search-box input:focus {
+      border-color: #4299e1;
+    }
+
+    .search-box input::placeholder {
+      color: #a0aec0;
+    }
+
+    /* 标签筛选 */
+    .filter-section {
+      margin-bottom: 15px;
+    }
+
+    .filter-group {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .filter-label {
+      font-size: 13px;
+      color: #718096;
+      min-width: 40px;
+    }
+
+    .filter-btn {
+      padding: 6px 12px;
+      background: #f7fafc;
+      border: 2px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: 12px;
+      color: #4a5568;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .filter-btn:hover {
+      background: #edf2f7;
+    }
+
+    .filter-btn.active {
+      background: #ebf8ff;
+      border-color: #4299e1;
+      color: #3182ce;
+    }
+
     /* Tab 导航栏 */
     .tab-nav {
       display: flex;
@@ -679,6 +743,31 @@
 
     <!-- 任务列表页面 -->
     <div class="page active" id="todo-page">
+      <div class="search-box">
+        <input type="text" id="search-input" placeholder="搜索任务标题或内容...">
+      </div>
+      <!-- 标签筛选 -->
+      <div class="filter-section">
+        <div class="filter-group" id="filter-duration">
+          <span class="filter-label">时间:</span>
+          <button class="filter-btn active" data-value="">全部</button>
+          <button class="filter-btn" data-value="长期">长期</button>
+          <button class="filter-btn" data-value="短期">短期</button>
+        </div>
+        <div class="filter-group" id="filter-party">
+          <span class="filter-label">甲方:</span>
+          <button class="filter-btn active" data-value="">全部</button>
+          <button class="filter-btn" data-value="CM">CM</button>
+          <button class="filter-btn" data-value="客户">客户</button>
+        </div>
+        <div class="filter-group" id="filter-category">
+          <span class="filter-label">分类:</span>
+          <button class="filter-btn active" data-value="">全部</button>
+          <button class="filter-btn" data-value="采购">采购</button>
+          <button class="filter-btn" data-value="生产">生产</button>
+          <button class="filter-btn" data-value="其他">其他</button>
+        </div>
+      </div>
       <ul class="todo-list" id="todo-list"></ul>
     </div>
 
@@ -787,6 +876,7 @@
     const completedCount = document.getElementById('completed-count');
     const totalCount = document.getElementById('total-count');
     const monthStatsContent = document.getElementById('month-stats-content');
+    const searchInput = document.getElementById('search-input');
 
     // 添加任务弹窗元素
     const addBtn = document.getElementById('add-btn');
@@ -869,6 +959,31 @@
         });
         document.getElementById(`${tab}-page`).classList.add('active');
         if (tab === 'stats') renderMonthlyStats();
+      });
+    });
+
+    // 搜索功能
+    searchInput.addEventListener('input', () => {
+      renderTodos();
+    });
+
+    // 标签筛选状态
+    let filterState = {
+      duration: '',
+      party: '',
+      category: ''
+    };
+
+    // 标签筛选功能
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const group = btn.parentElement;
+        const groupId = group.id;
+        const value = btn.dataset.value;
+        group.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        filterState[groupId.replace('filter-', '')] = value;
+        renderTodos();
       });
     });
 
@@ -1052,16 +1167,35 @@
 
     // 渲染任务列表
     function renderTodos() {
+      const searchTerm = searchInput.value.trim().toLowerCase();
       todoList.innerHTML = '';
-      if (todos.length === 0) {
+
+      // 过滤任务（搜索 + 标签筛选）
+      const filteredTodos = todos.filter(todo => {
+        const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
+
+        // 搜索条件
+        const titleMatch = todo.title.toLowerCase().includes(searchTerm);
+        const textMatch = todo.text && todo.text.toLowerCase().includes(searchTerm);
+        const searchMatch = !searchTerm || titleMatch || textMatch;
+
+        // 标签筛选条件
+        const durationMatch = !filterState.duration || tag.duration === filterState.duration;
+        const partyMatch = !filterState.party || tag.party === filterState.party;
+        const categoryMatch = !filterState.category || tag.category === filterState.category;
+
+        return searchMatch && durationMatch && partyMatch && categoryMatch;
+      });
+
+      if (filteredTodos.length === 0) {
         todoList.innerHTML = `
           <li class="empty-state">
             <div class="icon">📝</div>
-            <p>暂无任务</p>
+            <p>${searchTerm ? '未找到匹配的任务' : '暂无任务'}</p>
           </li>
         `;
       } else {
-        todos.forEach((todo, index) => {
+        filteredTodos.forEach((todo, index) => {
           const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
           const li = document.createElement('li');
           li.className = `todo-item ${todo.completed ? 'completed' : ''}`;
