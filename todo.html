@@ -80,6 +80,121 @@
       transform: translateY(0);
     }
 
+    .toggle-stats {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 20px;
+      background: white;
+      border: 2px solid #b8d4e8;
+      border-radius: 10px;
+      color: #4299e1;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .toggle-stats:hover {
+      background: #ebf8ff;
+      border-color: #4299e1;
+    }
+
+    .monthly-stats {
+      display: none;
+      margin-bottom: 20px;
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(66, 153, 225, 0.1);
+      overflow: hidden;
+    }
+
+    .monthly-stats.show {
+      display: block;
+    }
+
+    .monthly-stats h2 {
+      padding: 14px 16px;
+      background: linear-gradient(135deg, #4299e1 0%, #3182ce 100%);
+      color: white;
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .month-group {
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .month-group:last-child {
+      border-bottom: none;
+    }
+
+    .month-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: #f7fafc;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .month-header:hover {
+      background: #edf2f7;
+    }
+
+    .month-title {
+      font-weight: 600;
+      color: #2d3748;
+    }
+
+    .month-count {
+      background: #48bb78;
+      color: white;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .month-tasks {
+      display: none;
+      padding: 8px 16px 12px;
+    }
+
+    .month-tasks.show {
+      display: block;
+    }
+
+    .month-task {
+      display: flex;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #edf2f7;
+    }
+
+    .month-task:last-child {
+      border-bottom: none;
+    }
+
+    .month-task input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin-right: 10px;
+      accent-color: #48bb78;
+      cursor: pointer;
+    }
+
+    .month-task span {
+      flex: 1;
+      font-size: 14px;
+      color: #4a5568;
+      word-break: break-word;
+    }
+
+    .month-task .complete-time {
+      font-size: 12px;
+      color: #a0aec0;
+    }
+
     .todo-list {
       list-style: none;
     }
@@ -185,6 +300,12 @@
       margin-bottom: 10px;
     }
 
+    .stats-empty {
+      padding: 30px 16px;
+      text-align: center;
+      color: #a0aec0;
+    }
+
     @media (max-width: 480px) {
       .input-section {
         flex-direction: column;
@@ -215,6 +336,13 @@
       <button id="add-btn">添加</button>
     </div>
 
+    <button class="toggle-stats" id="toggle-stats">显示月度统计</button>
+
+    <div class="monthly-stats" id="monthly-stats">
+      <h2>月度统计</h2>
+      <div id="stats-content"></div>
+    </div>
+
     <ul class="todo-list" id="todo-list"></ul>
   </div>
 
@@ -227,6 +355,9 @@
     const todoList = document.getElementById('todo-list');
     const completedCount = document.getElementById('completed-count');
     const totalCount = document.getElementById('total-count');
+    const toggleStats = document.getElementById('toggle-stats');
+    const monthlyStats = document.getElementById('monthly-stats');
+    const statsContent = document.getElementById('stats-content');
 
     // 格式化时间
     function formatTime(timestamp) {
@@ -239,6 +370,82 @@
       const minutes = String(date.getMinutes()).padStart(2, '0');
       return `${year}-${month}-${day} ${hours}:${minutes}`;
     }
+
+    // 获取月份Key（格式：2026年1月）
+    function getMonthKey(timestamp) {
+      if (!timestamp) return null;
+      const date = new Date(timestamp);
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      return `${year}年${month}月`;
+    }
+
+    // 按月份分组已完成任务
+    function getCompletedByMonth() {
+      const completed = todos.filter(t => t.completed && t.completedAt);
+      const grouped = {};
+
+      completed.forEach(todo => {
+        const key = getMonthKey(todo.completedAt);
+        if (key) {
+          if (!grouped[key]) grouped[key] = [];
+          grouped[key].push(todo);
+        }
+      });
+
+      return grouped;
+    }
+
+    // 渲染月度统计
+    function renderMonthlyStats() {
+      const grouped = getCompletedByMonth();
+      const months = Object.keys(grouped).sort((a, b) => {
+        return new Date(b) - new Date(a);
+      });
+
+      if (months.length === 0) {
+        statsContent.innerHTML = '<div class="stats-empty">暂无已完成任务</div>';
+        return;
+      }
+
+      statsContent.innerHTML = months.map(month => {
+        const tasks = grouped[month];
+        return `
+          <div class="month-group">
+            <div class="month-header" onclick="toggleMonth(this)">
+              <span class="month-title">${month}</span>
+              <span class="month-count">${tasks.length}个</span>
+            </div>
+            <div class="month-tasks">
+              ${tasks.map(todo => `
+                <div class="month-task">
+                  <input type="checkbox" checked disabled>
+                  <span>${escapeHtml(todo.text)}</span>
+                  <span class="complete-time">${formatTime(todo.completedAt)}</span>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // 切换月份展开/收起
+    window.toggleMonth = function(header) {
+      const tasks = header.nextElementSibling;
+      tasks.classList.toggle('show');
+    };
+
+    // 切换统计显示
+    toggleStats.addEventListener('click', () => {
+      monthlyStats.classList.toggle('show');
+      toggleStats.textContent = monthlyStats.classList.contains('show')
+        ? '隐藏月度统计'
+        : '显示月度统计';
+      if (monthlyStats.classList.contains('show')) {
+        renderMonthlyStats();
+      }
+    });
 
     // 渲染任务列表
     function renderTodos() {
