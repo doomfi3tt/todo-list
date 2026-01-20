@@ -434,6 +434,25 @@
       color: #38a169;
     }
 
+    .todo-item.overdue {
+      border-left: 3px solid #e53e3e;
+      background: #fff5f5;
+    }
+
+    .todo-item.overdue .text {
+      color: #c53030;
+    }
+
+    .overdue-time .time-value {
+      color: #e53e3e;
+      font-weight: 500;
+    }
+
+    .reminder-item .time-value {
+      color: #805ad5;
+      font-weight: 500;
+    }
+
     .todo-item .delete-btn {
       width: 32px;
       height: 32px;
@@ -665,6 +684,15 @@
       background: #edf2f7;
     }
 
+    .month-task.overdue {
+      background: #fff5f5;
+      border-left: 3px solid #e53e3e;
+    }
+
+    .month-task.overdue:hover {
+      background: #fed7d7;
+    }
+
     .month-task input[type="checkbox"] {
       margin-right: 10px;
       margin-top: 2px;
@@ -767,6 +795,11 @@
           <button class="filter-btn" data-value="生产">生产</button>
           <button class="filter-btn" data-value="其他">其他</button>
         </div>
+        <div class="filter-group" id="filter-sort">
+          <span class="filter-label">排序:</span>
+          <button class="filter-btn active" data-value="created">按添加时间</button>
+          <button class="filter-btn" data-value="deadline">按截止时间</button>
+        </div>
       </div>
       <ul class="todo-list" id="todo-list"></ul>
     </div>
@@ -831,6 +864,37 @@
         </div>
       </div>
 
+      <!-- 截止时间 -->
+      <div class="tag-section">
+        <label>截止时间（可选）</label>
+        <input type="datetime-local" id="deadline-input" style="width: 100%; padding: 12px 14px; border: 2px solid #b8d4e8; border-radius: 10px; font-size: 16px; outline: none;">
+        <button type="button" onclick="document.getElementById('deadline-input').value = ''" style="margin-top: 8px; padding: 6px 12px; background: #e2e8f0; border: none; border-radius: 6px; font-size: 12px; cursor: pointer; color: #4a5568;">清除截止时间</button>
+      </div>
+
+      <!-- 提醒设置 -->
+      <div class="tag-section">
+        <label>提醒（可选）</label>
+        <div class="tag-options" id="reminder-type-tags">
+          <label class="tag-option selected">
+            <input type="radio" name="reminder_type" value="none" checked> 无
+          </label>
+          <label class="tag-option">
+            <input type="radio" name="reminder_type" value="once"> 单次
+          </label>
+          <label class="tag-option">
+            <input type="radio" name="reminder_type" value="daily"> 每天
+          </label>
+          <label class="tag-option">
+            <input type="radio" name="reminder_type" value="weekly"> 每周
+          </label>
+          <label class="tag-option">
+            <input type="radio" name="reminder_type" value="monthly"> 每月
+          </label>
+        </div>
+        <input type="time" id="reminder-time-input" style="margin-top: 10px; width: 100%; padding: 12px 14px; border: 2px solid #b8d4e8; border-radius: 10px; font-size: 16px; outline: none;">
+        <p style="font-size: 12px; color: #718096; margin-top: 6px;">* 单次提醒需要设置具体时间，其他类型只需设置时间点</p>
+      </div>
+
       <div class="modal-buttons">
         <button class="btn-cancel" id="btn-cancel">取消</button>
         <button class="btn-confirm" id="btn-confirm">添加</button>
@@ -868,9 +932,8 @@
   </div>
 
   <script>
-    // 从本地存储加载数据
-    let todos = JSON.parse(localStorage.getItem('todos')) || [];
-    let nextTodoId = parseInt(localStorage.getItem('nextTodoId')) || 1;
+    // 数据状态
+    let todos = [];
 
     const todoList = document.getElementById('todo-list');
     const completedCount = document.getElementById('completed-count');
@@ -906,6 +969,12 @@
       modal.classList.add('show');
       titleInput.value = '';
       todoInput.value = '';
+      document.getElementById('deadline-input').value = '';
+      document.getElementById('reminder-time-input').value = '';
+      document.querySelectorAll('#reminder-type-tags .tag-option').forEach(opt => {
+        opt.classList.remove('selected');
+      });
+      document.querySelector('#reminder-type-tags .tag-option:first-child').classList.add('selected');
       resetTagSelection();
       titleInput.focus();
     });
@@ -942,9 +1011,9 @@
     });
 
     // 确认添加
-    btnConfirm.addEventListener('click', addTodo);
+    btnConfirm.addEventListener('click', handleAddTodo);
     todoInput.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') addTodo();
+      if (e.key === 'Enter') handleAddTodo();
     });
 
     // Tab 切换
@@ -971,7 +1040,8 @@
     let filterState = {
       duration: '',
       party: '',
-      category: ''
+      category: '',
+      sort: 'created'
     };
 
     // 标签筛选功能
@@ -1008,14 +1078,24 @@
 
     // 按月份分组已完成任务
     function getCompletedByMonth() {
-      const completed = todos.filter(t => t.completed && t.completedAt);
+      const completed = todos.filter(t => t.completed && t.completed_at);
       const grouped = {};
       completed.forEach(todo => {
-        const key = getMonthKey(todo.completedAt);
+        // 按截止时间排序
+        const sortKey = todo.deadline || todo.completed_at;
+        const key = getMonthKey(sortKey);
         if (key) {
           if (!grouped[key]) grouped[key] = [];
           grouped[key].push(todo);
         }
+      });
+      // 每个月份内按截止时间排序
+      Object.values(grouped).forEach(group => {
+        group.sort((a, b) => {
+          const aKey = a.deadline || a.completed_at;
+          const bKey = b.deadline || b.completed_at;
+          return aKey - bKey;
+        });
       });
       return grouped;
     }
@@ -1024,7 +1104,9 @@
     function getAllByMonth() {
       const grouped = {};
       todos.forEach(todo => {
-        const key = getMonthKey(todo.createdAt);
+        // 按截止时间排序，没有截止时间则按创建时间
+        const sortKey = todo.deadline || todo.created_at;
+        const key = getMonthKey(sortKey);
         if (key) {
           if (!grouped[key]) grouped[key] = { total: 0, completed: 0, tasks: [] };
           grouped[key].total++;
@@ -1032,13 +1114,26 @@
           grouped[key].tasks.push(todo);
         }
       });
+      // 每个月份内按截止时间排序（过期任务排前面）
+      Object.values(grouped).forEach(group => {
+        group.tasks.sort((a, b) => {
+          const aKey = a.deadline || a.created_at;
+          const bKey = b.deadline || b.created_at;
+          return aKey - bKey;
+        });
+      });
       return grouped;
     }
 
     // 渲染月度统计
     function renderMonthlyStats() {
       const grouped = getAllByMonth();
-      const months = Object.keys(grouped).sort((a, b) => new Date(b) - new Date(a));
+      // 按截止时间排序月份
+      const months = Object.keys(grouped).sort((a, b) => {
+        const aKey = grouped[a].tasks[0]?.deadline || grouped[a].tasks[0]?.created_at;
+        const bKey = grouped[b].tasks[0]?.deadline || grouped[b].tasks[0]?.created_at;
+        return bKey - aKey;
+      });
       if (months.length === 0) {
         monthStatsContent.innerHTML = '<div class="stats-empty">暂无任务数据</div>';
         return;
@@ -1048,21 +1143,29 @@
         const data = grouped[month];
         const { total, completed, tasks } = data;
         const percentage = total > 0 ? (completed / total) * 100 : 0;
-        const completedTasks = tasks.filter(t => t.completed).sort((a, b) => b.completedAt - a.completedAt);
+        // 已完成任务按截止时间排序（过期排前面）
+        const completedTasks = tasks.filter(t => t.completed).sort((a, b) => {
+          const aKey = a.deadline || a.completed_at;
+          const bKey = b.deadline || b.completed_at;
+          return bKey - aKey;
+        });
 
         let tasksHtml = '';
         if (completedTasks.length > 0) {
           completedTasks.forEach(todo => {
-            const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
+            const duration = todo.duration || '长期';
+            const party = todo.party || 'CM';
+            const category = todo.category || '采购';
+            const isOverdue = todo.deadline && Date.now() > todo.deadline;
             tasksHtml += `
-                <div class="month-task" onclick="openTaskFromStats(${todo.id || 0})">
+                <div class="month-task ${isOverdue ? 'overdue' : ''}" onclick="openTaskFromStats(${todo.id || 0})">
                   <input type="checkbox" checked disabled>
                   <div class="task-content">
                     <span class="task-text">
                       <strong>${escapeHtml(todo.title)}</strong>
-                      <span class="tag">${tag.duration} · ${tag.party} · ${tag.category}</span>
+                      <span class="tag">${duration} · ${party} · ${category}</span>
                     </span>
-                    <span class="complete-time">${formatTime(todo.completedAt)}</span>
+                    <span class="complete-time">${todo.deadline ? '截止: ' + formatTime(todo.deadline) + ' | ' : ''}完成: ${formatTime(todo.completed_at)}</span>
                   </div>
                 </div>`;
           });
@@ -1094,8 +1197,7 @@
     };
 
     window.openTaskFromStats = function(todoId) {
-      const index = todos.findIndex(t => t.id === todoId);
-      if (index !== -1) {
+      if (todos.find(t => t.id === todoId)) {
         // 切换到任务列表页面
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.querySelector('[data-tab="todo"]').classList.add('active');
@@ -1103,17 +1205,18 @@
           page.classList.remove('active');
         });
         document.getElementById('todo-page').classList.add('active');
-        openDetail(index);
+        openDetailById(todoId);
       }
     };
 
     // 打开任务详情
-    function openDetail(index) {
-      const todo = todos[index];
-      currentTodoId = index;
+    function openDetailById(todoId) {
+      const todo = todos.find(t => t.id === todoId);
+      if (!todo) return;
+      currentTodoId = todo.id;
       detailTitle.textContent = todo.title;
       detailText.textContent = todo.text || '无';
-      const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
+      const tag = { duration: todo.duration, party: todo.party, category: todo.category };
       detailTags.innerHTML = `
         <span class="tag">${tag.duration}</span>
         <span class="tag">${tag.party}</span>
@@ -1137,6 +1240,13 @@
       detailModal.classList.add('show');
     }
 
+    // 打开任务详情（兼容旧版索引方式）
+    function openDetail(index) {
+      if (todos[index]) {
+        openDetailById(todos[index].id);
+      }
+    }
+
     // 关闭详情弹窗
     function closeDetail() {
       detailModal.classList.remove('show');
@@ -1149,19 +1259,17 @@
     });
 
     // 添加进度
-    btnAddProgress.addEventListener('click', () => {
+    btnAddProgress.addEventListener('click', async () => {
       const content = progressInput.value.trim();
       if (content && currentTodoId !== null) {
-        if (!todos[currentTodoId].progress) {
-          todos[currentTodoId].progress = [];
-        }
-        todos[currentTodoId].progress.push({
-          content,
-          time: Date.now()
+        await fetch(`/api/todos/${currentTodoId}/progress`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content })
         });
-        saveTodos();
+        await loadTodos();
         renderTodos();
-        openDetail(currentTodoId);
+        openDetailById(currentTodoId);
       }
     });
 
@@ -1172,19 +1280,44 @@
 
       // 过滤任务（搜索 + 标签筛选）
       const filteredTodos = todos.filter(todo => {
-        const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
+        const duration = todo.duration || '长期';
+        const party = todo.party || 'CM';
+        const category = todo.category || '采购';
 
         // 搜索条件
         const titleMatch = todo.title.toLowerCase().includes(searchTerm);
         const textMatch = todo.text && todo.text.toLowerCase().includes(searchTerm);
-        const searchMatch = !searchTerm || titleMatch || textMatch;
+        // 搜索进度记录内容
+        const progressMatch = todo.progress && todo.progress.some(p =>
+          p.content && p.content.toLowerCase().includes(searchTerm)
+        );
+        const searchMatch = !searchTerm || titleMatch || textMatch || progressMatch;
 
         // 标签筛选条件
-        const durationMatch = !filterState.duration || tag.duration === filterState.duration;
-        const partyMatch = !filterState.party || tag.party === filterState.party;
-        const categoryMatch = !filterState.category || tag.category === filterState.category;
+        const durationMatch = !filterState.duration || duration === filterState.duration;
+        const partyMatch = !filterState.party || party === filterState.party;
+        const categoryMatch = !filterState.category || category === filterState.category;
 
         return searchMatch && durationMatch && partyMatch && categoryMatch;
+      });
+
+      // 排序
+      filteredTodos.sort((a, b) => {
+        if (filterState.sort === 'deadline') {
+          // 按截止时间排序：有截止时间的排前面，过期的更靠前
+          if (!a.deadline && !b.deadline) return b.created_at - a.created_at;
+          if (!a.deadline) return 1;  // a没有截止时间排后面
+          if (!b.deadline) return -1; // b没有截止时间排前面
+          // 都有限制时间，过期的排前面
+          const aOverdue = !a.completed && Date.now() > a.deadline;
+          const bOverdue = !b.completed && Date.now() > b.deadline;
+          if (aOverdue && !bOverdue) return -1;
+          if (!aOverdue && bOverdue) return 1;
+          return a.deadline - b.deadline;
+        } else {
+          // 按添加时间排序（默认）
+          return b.created_at - a.created_at;
+        }
       });
 
       if (filteredTodos.length === 0) {
@@ -1196,30 +1329,47 @@
         `;
       } else {
         filteredTodos.forEach((todo, index) => {
-          const tag = todo.tag || { duration: '长期', party: 'CM', category: '采购' };
+          const duration = todo.duration || '长期';
+          const party = todo.party || 'CM';
+          const category = todo.category || '采购';
+          const isOverdue = todo.deadline && !todo.completed && Date.now() > todo.deadline;
           const li = document.createElement('li');
-          li.className = `todo-item ${todo.completed ? 'completed' : ''}`;
+          li.className = `todo-item ${todo.completed ? 'completed' : ''} ${isOverdue ? 'overdue' : ''}`;
           li.innerHTML = `
-            <input type="checkbox" ${todo.completed ? 'checked' : ''}>
+            <input type="checkbox" ${todo.completed ? 'checked disabled' : ''}>
             <div class="content">
               <div class="title-row">
                 <span class="text">${escapeHtml(todo.title)}</span>
-                <span class="tag">${tag.duration} · ${tag.party} · ${tag.category}</span>
+                <span class="tag">${duration} · ${party} · ${category}</span>
               </div>
               ${todo.text ? `<span class="desc">${escapeHtml(todo.text)}</span>` : ''}
               <div class="times">
                 <span class="time-item">
                   <span class="time-label">添加:</span>
-                  <span class="time-value">${formatTime(todo.createdAt)}</span>
+                  <span class="time-value">${formatTime(todo.created_at)}</span>
                 </span>
+                ${todo.deadline ? `
+                <span class="time-item ${isOverdue ? 'overdue-time' : ''}">
+                  <span class="time-label">截止:</span>
+                  <span class="time-value">${formatTime(todo.deadline)}</span>
+                </span>
+                ` : ''}
+                ${todo.completed ? `
                 <span class="time-item">
                   <span class="time-label">完成:</span>
-                  <span class="time-value">${formatTime(todo.completedAt)}</span>
+                  <span class="time-value">${formatTime(todo.completed_at)}</span>
                 </span>
+                ` : ''}
                 ${(todo.progress && todo.progress.length) ? `
                 <span class="time-item">
                   <span class="time-label">进度:</span>
                   <span class="time-value">${todo.progress.length}条</span>
+                </span>
+                ` : ''}
+                ${todo.reminder_type && todo.reminder_type !== 'none' ? `
+                <span class="time-item reminder-item">
+                  <span class="time-label">提醒:</span>
+                  <span class="time-value">${todo.reminder_type === 'once' ? '单次' : todo.reminder_type === 'daily' ? '每天' : todo.reminder_type === 'weekly' ? '每周' : todo.reminder_type === 'monthly' ? '每月' : ''} ${formatTime(todo.reminder_time).split(' ')[1] || ''}</span>
                 </span>
                 ` : ''}
               </div>
@@ -1238,13 +1388,26 @@
           });
 
           // 复选框点击
-          li.querySelector('input').addEventListener('change', (e) => {
+          const checkbox = li.querySelector('input');
+          checkbox.addEventListener('change', async (e) => {
             e.stopPropagation();
-            const wasCompleted = todos[index].completed;
-            todos[index].completed = !wasCompleted;
-            todos[index].completedAt = !wasCompleted ? Date.now() : null;
-            saveTodos();
-            renderTodos();
+            const todo = todos[index];
+            if (todo.completed) {
+              // 已完成的任务不允许取消
+              return;
+            }
+            if (confirm('确定要将此任务标记为完成吗？任务完成后将无法取消。')) {
+              await fetch(`/api/todos/${todo.id}/completed`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ completed: true })
+              });
+              await loadTodos();
+              renderTodos();
+            } else {
+              // 用户取消，恢复复选框状态
+              e.target.checked = false;
+            }
           });
 
           // 编辑按钮
@@ -1254,11 +1417,14 @@
           });
 
           // 删除按钮
-          li.querySelector('.delete-btn').addEventListener('click', (e) => {
+          li.querySelector('.delete-btn').addEventListener('click', async (e) => {
             e.stopPropagation();
-            todos.splice(index, 1);
-            saveTodos();
-            renderTodos();
+            const todo = todos[index];
+            if (confirm('确定要删除这个任务吗？')) {
+              await fetch(`/api/todos/${todo.id}`, { method: 'DELETE' });
+              await loadTodos();
+              renderTodos();
+            }
           });
 
           todoList.appendChild(li);
@@ -1271,12 +1437,6 @@
       totalCount.textContent = todos.length;
     }
 
-    // 保存到本地存储
-    function saveTodos() {
-      localStorage.setItem('todos', JSON.stringify(todos));
-      localStorage.setItem('nextTodoId', nextTodoId);
-    }
-
     // HTML 转义
     function escapeHtml(text) {
       if (!text) return '';
@@ -1286,23 +1446,43 @@
     }
 
     // 添加任务
-    function addTodo() {
+    async function handleAddTodo() {
       const title = titleInput.value.trim();
       const text = todoInput.value.trim();
+      const deadlineInput = document.getElementById('deadline-input').value;
+      const deadline = deadlineInput ? new Date(deadlineInput).getTime() : null;
+
+      // 获取提醒设置
+      const reminderTypeInput = document.querySelector('input[name="reminder_type"]:checked');
+      const reminderType = reminderTypeInput ? reminderTypeInput.value : 'none';
+      const reminderTimeInput = document.getElementById('reminder-time-input').value;
+
+      let reminderTime = null;
+      if (reminderType !== 'none' && reminderTimeInput) {
+        const now = new Date();
+        if (reminderType === 'once') {
+          // 单次提醒：使用设置的日期时间
+          const [hours, minutes] = reminderTimeInput.split(':');
+          const deadlineDate = new Date(deadlineInput ? new Date(deadlineInput) : now);
+          deadlineDate.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+          reminderTime = deadlineDate.getTime();
+        } else {
+          // 周期提醒：只使用时间，每天/每周/每月触发
+          const [hours, minutes] = reminderTimeInput.split(':');
+          const today = new Date();
+          today.setHours(parseInt(hours), parseInt(minutes), 0, 0);
+          reminderTime = today.getTime();
+        }
+      }
+
       if (title) {
         const { duration, party, category } = getSelectedTags();
-        const id = nextTodoId++;
-        todos.unshift({
-          id,
-          title,
-          text,
-          tag: { duration, party, category },
-          completed: false,
-          createdAt: Date.now(),
-          completedAt: null,
-          progress: []
+        await fetch('/api/todos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title, text, duration, party, category, deadline, reminder_time: reminderTime, reminder_type: reminderType })
         });
-        saveTodos();
+        await loadTodos();
         renderTodos();
         closeModal();
       }
@@ -1315,8 +1495,25 @@
       return { duration, party, category };
     }
 
+    // 从服务器加载任务列表
+    async function loadTodos() {
+      const res = await fetch('/api/todos');
+      todos = await res.json();
+    }
+
+    // 初始化应用
+    async function initApp() {
+      try {
+        await loadTodos();
+        renderTodos();
+      } catch (err) {
+        console.error('加载数据失败:', err);
+        alert('加载数据失败，请刷新页面重试');
+      }
+    }
+
     // 初始渲染
-    renderTodos();
+    initApp();
   </script>
 </body>
 </html>

@@ -1,0 +1,4 @@
+node_modules/
+todo.db
+*.numbers
+.DS_Store
