@@ -1,16 +1,36 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
-
-// 使用 sql.js
-const initSqlJs = require('sql.js');
-// 使用 node-notifier 发送通知
-const notifier = require('node-notifier');
 
 const app = express();
-const PORT = 8080;
-const DB_PATH = path.join(__dirname, 'todo.db');
+const PORT = process.env.PORT || 8080;
+
+// Vercel KV Redis 客户端
+let kv;
+
+async function initKV() {
+  try {
+    const { KvRestApi } = require('@vercel/kv');
+    // 使用环境变量 KV_REST_API_URL 和 KV_REST_API_TOKEN
+    kv = new KvRestApi({
+      url: process.env.KV_REST_API_URL,
+      token: process.env.KV_REST_API_TOKEN,
+    });
+    // 测试连接
+    await kv.ping();
+    console.log('Redis 连接成功');
+  } catch (err) {
+    console.log('Redis 连接失败，将使用内存存储:', err.message);
+    // 回退到内存存储
+    kv = null;
+  }
+}
+
+// 内存存储（回退方案）
+let memoryStore = {
+  todos: [],
+  progress: {}
+};
 
 // 中间件
 app.use(cors());
@@ -22,262 +42,256 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'todo.html'));
 });
 
-let db = null;
-
-// 初始化数据库
-async function initDatabase() {
-  const SQL = await initSqlJs();
-
-  // 尝试加载已有数据库
-  if (fs.existsSync(DB_PATH)) {
-    const buffer = fs.readFileSync(DB_PATH);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
-  }
-
-  // 创建表
-  db.run(`
-    CREATE TABLE IF NOT EXISTS todos (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      text TEXT,
-      duration TEXT DEFAULT '长期',
-      party TEXT DEFAULT 'CM',
-      category TEXT DEFAULT '采购',
-      completed INTEGER DEFAULT 0,
-      created_at INTEGER,
-      completed_at INTEGER,
-      deadline INTEGER,
-      reminder_time INTEGER,
-      reminder_type TEXT DEFAULT 'none'
-    )
-  `);
-
-  db.run(`
-    CREATE TABLE IF NOT EXISTS progress (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      todo_id INTEGER,
-      content TEXT,
-      time INTEGER,
-      FOREIGN KEY (todo_id) REFERENCES todos(id)
-    )
-  `);
-}
-
-// 保存数据库
-function saveDatabase() {
-  if (db) {
-    const data = db.export();
-    fs.writeFileSync(DB_PATH, Buffer.from(data));
-  }
-}
-
-// 发送系统通知
-function sendNotification(title, message) {
-  notifier.notify({
-    title: title,
-    message: message,
-    sound: 'Bottle',
-    timeout: 10,
-    wait: true
-  });
-}
-
-// 检查提醒任务
-function checkReminders() {
-  const now = Date.now();
-  const result = db.exec(`
-    SELECT id, title, text, reminder_time, reminder_type
-    FROM todos
-    WHERE completed = 0 AND reminder_time IS NOT NULL AND reminder_type != 'none'
-  `);
-
-  if (result.length === 0) return;
-
-  const { columns, values } = result[0];
-  const remindedIds = new Set();
-
-  values.forEach(row => {
-    const todo = {};
-    columns.forEach((col, i) => {
-      todo[col] = row[i];
-    });
-
-    if (remindedIds.has(todo.id)) return;
-
-    let shouldNotify = false;
-    const reminderTime = new Date(todo.reminder_time);
-    const nowDate = new Date(now);
-
-    switch (todo.reminder_type) {
-      case 'once':
-        // 单次提醒：检查是否到了提醒时间且未过太久（1分钟内）
-        if (now >= todo.reminder_time && now < todo.reminder_time + 60000) {
-          shouldNotify = true;
-        }
-        break;
-      case 'daily':
-        // 每天提醒：检查小时和分钟是否匹配
-        if (reminderTime.getHours() === nowDate.getHours() &&
-            reminderTime.getMinutes() === nowDate.getMinutes()) {
-          shouldNotify = true;
-        }
-        break;
-      case 'weekly':
-        // 每周提醒：检查星期几、小时和分钟
-        if (reminderTime.getDay() === nowDate.getDay() &&
-            reminderTime.getHours() === nowDate.getHours() &&
-            reminderTime.getMinutes() === nowDate.getMinutes()) {
-          shouldNotify = true;
-        }
-        break;
-      case 'monthly':
-        // 每月提醒：检查日期、小时和分钟
-        if (reminderTime.getDate() === nowDate.getDate() &&
-            reminderTime.getHours() === nowDate.getHours() &&
-            reminderTime.getMinutes() === nowDate.getMinutes()) {
-          shouldNotify = true;
-        }
-        break;
-    }
-
-    if (shouldNotify) {
-      const timeStr = `${nowDate.getHours().toString().padStart(2, '0')}:${nowDate.getMinutes().toString().padStart(2, '0')}`;
-      sendNotification('待办提醒', `[${timeStr}] ${todo.title}`);
-      remindedIds.add(todo.id);
-      console.log(`已发送提醒: ${todo.title} (${todo.reminder_type})`);
-    }
-  });
-}
-
-// 每分钟检查一次提醒
-setInterval(checkReminders, 60000);
-
 // API 路由
 
 // 获取所有任务
-app.get('/api/todos', (req, res) => {
-  const result = db.exec(`
-    SELECT id, title, text, duration, party, category, completed, created_at, completed_at, deadline, reminder_time, reminder_type
-    FROM todos ORDER BY created_at DESC
-  `);
-
-  if (result.length === 0) {
-    return res.json([]);
-  }
-
-  const todos = [];
-  const { columns, values } = result[0];
-
-  values.forEach(row => {
-    const todo = {};
-    columns.forEach((col, i) => {
-      todo[col] = row[i];
-    });
-
-    // 获取进度记录
-    const stmt = db.prepare(`SELECT content, time FROM progress WHERE todo_id = ? ORDER BY time DESC`);
-    stmt.bind([todo.id]);
-    const progress = [];
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      progress.push(row);
+app.get('/api/todos', async (req, res) => {
+  try {
+    let todos;
+    if (kv) {
+      todos = await kv.get('todos') || [];
+    } else {
+      todos = memoryStore.todos;
     }
-    stmt.free();
-    todo.progress = progress;
-    todos.push(todo);
-  });
 
-  res.json(todos);
+    // 获取所有任务的进度
+    const todosWithProgress = await Promise.all(todos.map(async (todo) => {
+      let progress;
+      if (kv) {
+        progress = await kv.hgetall(`progress:${todo.id}`) || [];
+      } else {
+        progress = memoryStore.progress[todo.id] || [];
+      }
+      // 将进度对象转换为数组
+      if (progress && typeof progress === 'object' && !Array.isArray(progress)) {
+        progress = Object.values(progress);
+      }
+      todo.progress = progress || [];
+      return todo;
+    }));
+
+    // 按创建时间排序
+    todosWithProgress.sort((a, b) => b.created_at - a.created_at);
+    res.json(todosWithProgress);
+  } catch (err) {
+    console.error('获取任务失败:', err);
+    res.json([]);
+  }
 });
 
 // 添加任务
-app.post('/api/todos', (req, res) => {
-  const { title, text, duration, party, category, deadline, reminder_time, reminder_type } = req.body;
-  const created_at = Date.now();
+app.post('/api/todos', async (req, res) => {
+  try {
+    const { title, text, duration, party, category, deadline, reminder_time, reminder_type } = req.body;
+    const created_at = Date.now();
 
-  db.run(`
-    INSERT INTO todos (title, text, duration, party, category, completed, created_at, completed_at, deadline, reminder_time, reminder_type)
-    VALUES (?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)
-  `, [title, text || '', duration || '长期', party || 'CM', category || '采购', created_at, deadline || null, reminder_time || null, reminder_type || 'none']);
+    let todos;
+    if (kv) {
+      todos = await kv.get('todos') || [];
+    } else {
+      todos = memoryStore.todos;
+    }
 
-  const result = db.exec("SELECT COALESCE(MAX(id), 0) as last_id FROM todos");
-  const lastId = result[0].values[0][0];
+    const newTodo = {
+      id: Date.now(),
+      title,
+      text: text || '',
+      duration: duration || '长期',
+      party: party || 'CM',
+      category: category || '采购',
+      completed: 0,
+      created_at,
+      completed_at: null,
+      deadline: deadline || null,
+      reminder_time: reminder_time || null,
+      reminder_type: reminder_type || 'none'
+    };
 
-  // 添加初始进度记录
-  db.run(`INSERT INTO progress (todo_id, content, time) VALUES (?, '任务已创建', ?)`, [lastId, created_at]);
-  saveDatabase();
+    todos.push(newTodo);
 
-  res.json({ id: lastId, success: true });
+    if (kv) {
+      await kv.set('todos', todos);
+    } else {
+      memoryStore.todos = todos;
+    }
+
+    // 添加初始进度记录
+    const progressRecord = {
+      content: '任务已创建',
+      time: created_at
+    };
+
+    if (kv) {
+      await kv.hset(`progress:${newTodo.id}`, { [created_at]: progressRecord });
+    } else {
+      if (!memoryStore.progress[newTodo.id]) {
+        memoryStore.progress[newTodo.id] = [];
+      }
+      memoryStore.progress[newTodo.id].push(progressRecord);
+    }
+
+    res.json({ id: newTodo.id, success: true });
+  } catch (err) {
+    console.error('添加任务失败:', err);
+    res.status(500).json({ error: '添加任务失败' });
+  }
 });
 
 // 更新任务
-app.put('/api/todos/:id', (req, res) => {
-  const { id } = req.params;
-  const { title, text, duration, party, category, deadline, reminder_time, reminder_type } = req.body;
+app.put('/api/todos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, text, duration, party, category, deadline, reminder_time, reminder_type } = req.body;
 
-  db.run(`
-    UPDATE todos
-    SET title = ?, text = ?, duration = ?, party = ?, category = ?, deadline = ?, reminder_time = ?, reminder_type = ?
-    WHERE id = ?
-  `, [
-    title, text || '', duration || '长期', party || 'CM', category || '采购',
-    deadline || null, reminder_time || null, reminder_type || 'none', id
-  ]);
+    let todos;
+    if (kv) {
+      todos = await kv.get('todos') || [];
+    } else {
+      todos = memoryStore.todos;
+    }
 
-  saveDatabase();
-  res.json({ success: true });
+    const index = todos.findIndex(t => t.id == id);
+    if (index !== -1) {
+      todos[index] = {
+        ...todos[index],
+        title: title || todos[index].title,
+        text: text !== undefined ? text : todos[index].text,
+        duration: duration || todos[index].duration,
+        party: party || todos[index].party,
+        category: category || todos[index].category,
+        deadline: deadline !== undefined ? deadline : todos[index].deadline,
+        reminder_time: reminder_time !== undefined ? reminder_time : todos[index].reminder_time,
+        reminder_type: reminder_type !== undefined ? reminder_type : todos[index].reminder_type
+      };
+
+      if (kv) {
+        await kv.set('todos', todos);
+      } else {
+        memoryStore.todos = todos;
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('更新任务失败:', err);
+    res.status(500).json({ error: '更新任务失败' });
+  }
 });
 
 // 更新任务完成状态
-app.put('/api/todos/:id/completed', (req, res) => {
-  const { id } = req.params;
-  const { completed } = req.body;
-  const completed_at = completed ? Date.now() : null;
+app.put('/api/todos/:id/completed', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { completed } = req.body;
+    const completed_at = completed ? Date.now() : null;
 
-  db.run(`UPDATE todos SET completed = ?, completed_at = ? WHERE id = ?`, [completed ? 1 : 0, completed_at, id]);
+    let todos;
+    if (kv) {
+      todos = await kv.get('todos') || [];
+    } else {
+      todos = memoryStore.todos;
+    }
 
-  if (completed) {
-    db.run(`INSERT INTO progress (todo_id, content, time) VALUES (?, '任务已完成', ?)`, [id, completed_at]);
+    const index = todos.findIndex(t => t.id == id);
+    if (index !== -1) {
+      todos[index].completed = completed ? 1 : 0;
+      todos[index].completed_at = completed_at;
+
+      if (kv) {
+        await kv.set('todos', todos);
+      } else {
+        memoryStore.todos = todos;
+      }
+
+      // 添加进度记录
+      if (completed) {
+        const progressRecord = {
+          content: '任务已完成',
+          time: completed_at
+        };
+
+        if (kv) {
+          await kv.hset(`progress:${id}`, { [completed_at]: progressRecord });
+        } else {
+          if (!memoryStore.progress[id]) {
+            memoryStore.progress[id] = [];
+          }
+          memoryStore.progress[id].push(progressRecord);
+        }
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('更新完成状态失败:', err);
+    res.status(500).json({ error: '更新失败' });
   }
-  saveDatabase();
-
-  res.json({ success: true });
 });
 
 // 删除任务
-app.delete('/api/todos/:id', (req, res) => {
-  const { id } = req.params;
+app.delete('/api/todos/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  db.run(`DELETE FROM progress WHERE todo_id = ?`, [id]);
-  db.run(`DELETE FROM todos WHERE id = ?`, [id]);
-  saveDatabase();
+    let todos;
+    if (kv) {
+      todos = await kv.get('todos') || [];
+    } else {
+      todos = memoryStore.todos;
+    }
 
-  res.json({ success: true });
+    todos = todos.filter(t => t.id != id);
+
+    if (kv) {
+      await kv.set('todos', todos);
+      await kv.del(`progress:${id}`);
+    } else {
+      memoryStore.todos = todos;
+      delete memoryStore.progress[id];
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('删除任务失败:', err);
+    res.status(500).json({ error: '删除任务失败' });
+  }
 });
 
 // 添加进度
-app.post('/api/todos/:id/progress', (req, res) => {
-  const { id } = req.params;
-  const { content } = req.body;
-  const time = Date.now();
+app.post('/api/todos/:id/progress', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    const time = Date.now();
 
-  db.run(`INSERT INTO progress (todo_id, content, time) VALUES (?, ?, ?)`, [id, content, time]);
-  saveDatabase();
+    const progressRecord = {
+      content,
+      time
+    };
 
-  res.json({ content, time, success: true });
+    if (kv) {
+      await kv.hset(`progress:${id}`, { [time]: progressRecord });
+    } else {
+      if (!memoryStore.progress[id]) {
+        memoryStore.progress[id] = [];
+      }
+      memoryStore.progress[id].push(progressRecord);
+    }
+
+    res.json(progressRecord);
+  } catch (err) {
+    console.error('添加进度失败:', err);
+    res.status(500).json({ error: '添加进度失败' });
+  }
 });
 
 // 启动服务器
-initDatabase().then(() => {
-  console.log('数据库初始化完成');
-  // 启动时立即检查一次提醒
-  setTimeout(checkReminders, 2000);
+initKV().then(() => {
   app.listen(PORT, () => {
     console.log(`服务器运行在 http://localhost:${PORT}`);
+    console.log('存储方式:', kv ? 'Redis (Vercel KV)' : '内存存储 (本地测试)');
   });
 }).catch(err => {
-  console.error('数据库初始化失败:', err);
+  console.error('初始化失败:', err);
   process.exit(1);
 });
